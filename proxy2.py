@@ -1,3 +1,4 @@
+#!/usr/bin/python2
 # -*- coding: utf-8 -*-
 import sys
 import os
@@ -12,12 +13,14 @@ import zlib
 import time
 import json
 import re
+import argparse
 from BaseHTTPServer import HTTPServer, BaseHTTPRequestHandler
 from SocketServer import ThreadingMixIn
 from cStringIO import StringIO
 from subprocess import Popen, PIPE
 from HTMLParser import HTMLParser
-
+from traceback import format_exc
+from binascii import hexlify
 
 def with_color(c, s):
     return "\x1b[%dm%s\x1b[0m" % (c, s)
@@ -41,6 +44,7 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
     cacert = 'ca.crt'
     certkey = 'cert.key'
     certdir = 'certs/'
+    clientcertdir = 'client_certs/'
     timeout = 5
     lock = threading.Lock()
 
@@ -112,9 +116,65 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
                     break
                 other.sendall(data)
 
+    def do_TUNNEL(self):
+        print('Tunnel to: %s' % self.path)
+        try:
+            s = socket.create_connection((self.args.gp_gateway, 443), timeout=self.timeout)
+        except Exception as e:
+            self.send_error(502)
+            return
+
+        cert_args = {}
+        if self.args.cert: cert_args['certfile']=self.args.cert
+        if self.args.key: cert_args['keyfile']=self.args.key
+        c = ssl.wrap_socket(s, **cert_args)
+
+        c.write('%s %s %s\r\n' % (self.command, self.path, self.request_version))
+        for line in self.headers.headers:
+            c.write(line.rstrip() + '\r\n')
+        c.write('\r\n')
+        print("Conveyed %d headers" % len(self.headers))
+
+        with open('tunnel-%s.pcap.txt' % time.strftime('%Y%m%d_%H%M%S'), 'w') as dumpfile:
+            print("Dumping to %s" % dumpfile.name)
+            dumpfile.write('#run this through text2pcap as: text2pcap -t:%%s -Dn %s %s\n' % (dumpfile.name, dumpfile.name[:-4]))
+
+            conns = [self.connection, c]
+            self.close_connection = 0
+            while not self.close_connection:
+                rlist, wlist, xlist = select.select(conns, [], conns, self.timeout)
+                if xlist or not rlist:
+                    break
+                for r in rlist:
+                    other = conns[1] if r is conns[0] else conns[0]
+                    data = r.recv(8192)
+                    if not data:
+                        self.close_connection = 1
+                        dumpfile.write('# hangup by '+('client' if r is self.connection else 'server'))
+                        break
+                    other.sendall(data)
+
+                    print('%s %r' % (('>' if r is self.connection else '<'), hexlify(data)))
+
+                    if data.startswith('\x1a\x2b\x3c\x4d'):
+                        # 1a2b3c4d08000034010000000000000045000034
+                        # 4 magic (1a2b3c4d), 2 ethertype? (0800), 2 inner packet length? (0034), 8 int64le = 1, inner packet
+                        raweth2 = '\0'*12 + data[4:6] + data[16:]
+
+                        dumpfile.write('%s:%d\n' % (('O' if r is self.connection else 'I'), time.time()))
+                        dumpfile.write('00000000' + ''.join(' %02x'%ord(b) for b in raweth2) + '\n')
+                    else:
+                        dumpfile.write('# %r\n' % repr(data))
+
+#        with self.lock:
+#            self.save_handler(self, None, None, None)
+
     def do_GET(self):
         if self.path == 'http://proxy2.test/':
             self.send_cacert()
+            return
+        elif self.path.startswith(self.args.tunnel_path):
+            self.do_TUNNEL()
             return
 
         req = self
@@ -122,6 +182,8 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
         req_body = self.rfile.read(content_length) if content_length else None
 
         if req.path[0] == '/':
+            if 'Host' not in req.headers:
+                req.headers['Host'] = self.gp_gateway
             if isinstance(self.connection, ssl.SSLSocket):
                 req.path = "https://%s%s" % (req.headers['Host'], req.path)
             else:
@@ -146,7 +208,10 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
             origin = (scheme, netloc)
             if not origin in self.tls.conns:
                 if scheme == 'https':
-                    self.tls.conns[origin] = httplib.HTTPSConnection(netloc, timeout=self.timeout)
+                    cert_args = {}
+                    if self.args.cert: cert_args['cert_file']=self.args.cert
+                    if self.args.key: cert_args['key_file']=self.args.key
+                    self.tls.conns[origin] = httplib.HTTPSConnection(netloc, timeout=self.timeout, **cert_args)
                 else:
                     self.tls.conns[origin] = httplib.HTTPConnection(netloc, timeout=self.timeout)
             conn = self.tls.conns[origin]
@@ -322,6 +387,8 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
                     print with_color(32, "==== HTML TITLE ====\n%s\n" % h.unescape(m.group(1).decode('utf-8')))
             elif content_type.startswith('text/') and len(res_body) < 1024:
                 res_body_text = res_body
+            elif content_type.startswith('application/xml') and len(res_body) < 8192:
+                res_body_text = res_body
 
             if res_body_text:
                 print with_color(32, "==== RESPONSE BODY ====\n%s\n" % res_body_text)
@@ -337,13 +404,20 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
 
 
 def test(HandlerClass=ProxyRequestHandler, ServerClass=ThreadingHTTPServer, protocol="HTTP/1.1"):
-    if sys.argv[1:]:
-        port = int(sys.argv[1])
-    else:
-        port = 8080
-    server_address = ('', port)
+    p = argparse.ArgumentParser()
+    p.add_argument('gp_gateway')
+    p.add_argument('-p','--port', type=int, default=8080)
+    p.add_argument('-t','--tunnel-path', default='/ssl-tunnel-connect.sslvpn')
+    g = p.add_argument_group('Client certificate')
+    g.add_argument('--cert', help='PEM file containing client certificate (and optionally private key)')
+    g.add_argument('--key', help='PEM file containing client private key (if not included in same file as certificate)')
+    args = p.parse_args()
+    if args.key and not args.cert:
+        p.error("--key without --cert doesn't make sense")
 
+    server_address = ('', args.port)
     HandlerClass.protocol_version = protocol
+    HandlerClass.args = args
     httpd = ServerClass(server_address, HandlerClass)
 
     sa = httpd.socket.getsockname()
