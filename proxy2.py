@@ -135,39 +135,21 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
         c.write('\r\n')
         print("Conveyed %d headers" % len(self.headers))
 
-        with open('tunnel-%s.pcap.txt' % time.strftime('%Y%m%d_%H%M%S'), 'w') as dumpfile:
-            print("Dumping to %s" % dumpfile.name)
-            dumpfile.write('#run this through text2pcap as: text2pcap -t:%%s -Dn %s %s\n' % (dumpfile.name, dumpfile.name[:-4]))
-
-            conns = [self.connection, c]
-            self.close_connection = 0
-            while not self.close_connection:
-                rlist, wlist, xlist = select.select(conns, [], conns, self.timeout)
-                if xlist or not rlist:
+        conns = [self.connection, c]
+        self.close_connection = 0
+        while not self.close_connection:
+            rlist, wlist, xlist = select.select(conns, [], conns, self.timeout)
+            if xlist or not rlist:
+                break
+            for r in rlist:
+                other = conns[1] if r is conns[0] else conns[0]
+                data = r.recv(8192)
+                if not data:
+                    self.close_connection = 1
                     break
-                for r in rlist:
-                    other = conns[1] if r is conns[0] else conns[0]
-                    data = r.recv(8192)
-                    if not data:
-                        self.close_connection = 1
-                        dumpfile.write('# hangup by '+('client' if r is self.connection else 'server'))
-                        break
-                    other.sendall(data)
+                other.sendall(data)
 
-                    print('%s %r' % (('>' if r is self.connection else '<'), hexlify(data)))
-
-                    if data.startswith('\x1a\x2b\x3c\x4d'):
-                        # 1a2b3c4d08000034010000000000000045000034
-                        # 4 magic (1a2b3c4d), 2 ethertype? (0800), 2 inner packet length? (0034), 8 int64le = 1, inner packet
-                        raweth2 = '\0'*12 + data[4:6] + data[16:]
-
-                        dumpfile.write('%s:%d\n' % (('O' if r is self.connection else 'I'), time.time()))
-                        dumpfile.write('00000000' + ''.join(' %02x'%ord(b) for b in raweth2) + '\n')
-                    else:
-                        dumpfile.write('# %r\n' % repr(data))
-
-#        with self.lock:
-#            self.save_handler(self, None, None, None)
+                print('%s %r' % (('>' if r is self.connection else '<'), hexlify(data)))
 
     def do_GET(self):
         if self.path == 'http://proxy2.test/':
