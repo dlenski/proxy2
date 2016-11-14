@@ -1,54 +1,22 @@
 # proxy2
 
-HTTP/HTTPS proxy in a single python script
+This version of [inaz/proxy2](https://github.com/inaz/proxy2) has been
+modified specifically for MITM-proxying of the SSL connection between a PAN
+GlobalProtect client running on Windows, and the VPN gateway.
 
+# How to use
 
-## Features
+You'll need to have the openssl command-line utilities installed on a Linux box with a publicly-visible IP address.
 
-* easy to customize
-* require no external modules
-* support both of IPv4 and IPv6
-* support HTTP/1.1 Persistent Connection
-* support dynamic certificate generation for HTTPS intercept
+On the Linux side:
 
-This script works on Python 2.7.
-You need to install OpenSSL to intercept HTTPS connections.
+1. `./setup_https_intercept.sh` (to generate the "fake" CA certificates)
+2. `./proxy2.py [--cert client_certificate_w_pkey.pem] [-p 8080] gp_vpn_gateway.company.com
+3. Watch the proxied traffic roll in.
+  * This script looks in particular for `GET /ssl-tunnel-connect.sslvpn`, and handles it as a `CONNECT`-like request with bidirectional traffic, rather than the normal behavior of the HTTP `GET` verb.
 
+On the Windows side:
 
-## Usage
-
-Just run as a script:
-
-```
-$ python proxy2.py
-```
-
-Above command runs the proxy on tcp/8080.
-To use another port, specify the port number as the first argument.
-
-```
-$ python proxy2.py 3128
-```
-
-
-## Enable HTTPS intercept
-
-To intercept HTTPS connections, generate private keys and a private CA certificate:
-
-```
-$ ./setup_https_intercept.sh
-```
-
-Through the proxy, you can access http://proxy2.test/ and install the CA certificate in the browsers.
-
-
-## Customization
-
-You can easily customize the proxy and modify the requests/responses or save something to the files.
-The ProxyRequestHandler class has 3 methods to customize:
-
-* request_handler: called before accessing the upstream server
-* response_handler: called before responding to the client
-* save_handler: called after responding to the client with the exclusive lock, so you can safely write out to the terminal or the file system
-
-By default, only save_handler is implemented which outputs HTTP(S) headers and some useful data to the standard output.
+1. Go to "Internet Options" and set your Linux host as your proxy
+2. If you want to force GlobalProtect to use the HTTPS tunnel instead of ESP, then block outgoing UDP traffic to the GlobalProtect ESP-over-UDP port (usually 4501) using Windows Firewall"
+3. Try to connect using the GlobalProtect VPN client.
