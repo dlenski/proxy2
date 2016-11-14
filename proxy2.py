@@ -66,6 +66,11 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
         if os.path.isfile(self.cakey) and os.path.isfile(self.cacert) and os.path.isfile(self.certkey) and os.path.isdir(self.certdir):
             self.connect_intercept()
         else:
+            print with_color(31, '''Relaying proxy traffic rather than intercepting it.
+*** THIS IS PROBABLY NOT WHAT YOU WANT!! ***
+You need to create the CA certificate files to allow this proxy to
+act as a man-in-the-middle (MITM) to intercept and decode HTTPS
+traffic. Run ./setup_https_intercept.sh and restart proxy.''')
             self.connect_relay()
 
     def connect_intercept(self):
