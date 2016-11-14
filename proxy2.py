@@ -14,6 +14,7 @@ import time
 import json
 import re
 import argparse
+import traceback
 from BaseHTTPServer import HTTPServer, BaseHTTPRequestHandler
 from SocketServer import ThreadingMixIn
 from cStringIO import StringIO
@@ -98,6 +99,7 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
             s = socket.create_connection(address, timeout=self.timeout)
         except Exception as e:
             self.send_error(502)
+            print with_color(7, with_color(31, '== Caught exception ==\n%s' % traceback.format_exc()))
             return
         self.send_response(200, 'Connection Established')
         self.end_headers()
@@ -122,6 +124,7 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
             s = socket.create_connection((self.args.gp_gateway, 443), timeout=self.timeout)
         except Exception as e:
             self.send_error(502)
+            print with_color(7, with_color(31, '== Caught exception ==\n%s' % traceback.format_exc()))
             return
 
         cert_args = {}
@@ -204,6 +207,7 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
             if origin in self.tls.conns:
                 del self.tls.conns[origin]
             self.send_error(502)
+            print with_color(7, with_color(31, '== Caught exception ==\n%s' % traceback.format_exc()))
             return
 
         version_table = {10: 'HTTP/1.0', 11: 'HTTP/1.1'}
