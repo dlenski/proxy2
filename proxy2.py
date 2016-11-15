@@ -179,6 +179,9 @@ traffic. Run ./setup_https_intercept.sh and restart proxy.''')
                         dumpfile.write('# %r\n' % repr(data))
 
     def do_GET(self):
+        if not getattr(self,'address',None):
+            self.send_error(401) # deny proxy requests without a prior CONNECT
+            return
         if self.path == 'http://proxy2.test/':
             self.send_cacert()
             return
