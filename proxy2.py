@@ -68,7 +68,9 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
             self.connect_relay()
 
     def connect_intercept(self):
-        hostname = self.path.split(':')[0]
+        address = self.path.split(':', 1)
+        hostname = address[0]
+        address[1] = int(address[1]) or 443
         certpath = "%s/%s.crt" % (self.certdir.rstrip('/'), hostname)
 
         with self.lock:
@@ -84,6 +86,7 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
         self.connection = ssl.wrap_socket(self.connection, keyfile=self.certkey, certfile=certpath, server_side=True)
         self.rfile = self.connection.makefile("rb", self.rbufsize)
         self.wfile = self.connection.makefile("wb", self.wbufsize)
+        self.address = address
 
         conntype = self.headers.get('Proxy-Connection', '')
         if conntype.lower() == 'close':
@@ -119,7 +122,7 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
     def do_TUNNEL(self):
         print('Tunnel to: %s' % self.path)
         try:
-            s = socket.create_connection((self.args.gp_gateway, 443), timeout=self.timeout)
+            s = socket.create_connection(self.address, timeout=self.timeout)
         except Exception as e:
             self.send_error(502)
             return
@@ -165,7 +168,7 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
 
         if req.path[0] == '/':
             if 'Host' not in req.headers:
-                req.headers['Host'] = self.gp_gateway
+                req.headers['Host'] = self.address[0] + (":%d"%self.address[1] if self.address[1]!=443 else '')
             if isinstance(self.connection, ssl.SSLSocket):
                 req.path = "https://%s%s" % (req.headers['Host'], req.path)
             else:
@@ -387,7 +390,6 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
 
 def test(HandlerClass=ProxyRequestHandler, ServerClass=ThreadingHTTPServer, protocol="HTTP/1.1"):
     p = argparse.ArgumentParser()
-    p.add_argument('gp_gateway')
     p.add_argument('-p','--port', type=int, default=8080)
     p.add_argument('-t','--tunnel-path', default='/ssl-tunnel-connect.sslvpn')
     g = p.add_argument_group('Client certificate')
