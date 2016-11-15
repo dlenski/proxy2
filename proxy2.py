@@ -45,7 +45,7 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
     certkey = 'cert.key'
     certdir = 'certs/'
     clientcertdir = 'client_certs/'
-    timeout = 5
+    timeout = 30 # don't want to close the sockets faster than GP keepalive
     lock = threading.Lock()
 
     def __init__(self, *args, **kwargs):
