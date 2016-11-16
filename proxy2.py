@@ -15,6 +15,7 @@ import json
 import re
 import argparse
 import traceback
+import xml.etree.ElementTree as ET
 from BaseHTTPServer import HTTPServer, BaseHTTPRequestHandler
 from SocketServer import ThreadingMixIn
 from cStringIO import StringIO
@@ -396,7 +397,7 @@ traffic. Run ./setup_https_intercept.sh and restart proxy.''')
                     print with_color(32, "==== HTML TITLE ====\n%s\n" % h.unescape(m.group(1).decode('utf-8')))
             elif content_type.startswith('text/') and len(res_body) < 1024:
                 res_body_text = res_body
-            elif content_type.startswith('application/xml') and len(res_body) < 8192:
+            elif content_type.startswith('application/xml') and len(res_body) < 65536:
                 res_body_text = res_body
 
             if res_body_text:
@@ -406,7 +407,15 @@ traffic. Run ./setup_https_intercept.sh and restart proxy.''')
         pass
 
     def response_handler(self, req, req_body, res, res_body):
-        pass
+        ct = res.headers.get('Content-Type','')
+        if ct.startswith('application/xml') and res_body.strip().startswith('<'):
+            r = ET.fromstring(res_body)
+            if r.tag=='policy':
+                for entry in r.findall('./gateways/external/list/entry[@name]'):
+                    # stupid GP client doesn't know how to resolve the
+                    # gateway address while connected through a proxy
+                    entry.attrib['name'] = socket.gethostbyname(entry.attrib['name'])
+                return '<?xml version="1.0" encoding="UTF-8"?>' + ET.tostring(r)
 
     def save_handler(self, req, req_body, res, res_body):
         self.print_info(req, req_body, res, res_body)
