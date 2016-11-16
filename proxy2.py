@@ -417,7 +417,9 @@ traffic. Run ./setup_https_intercept.sh and restart proxy.''')
                 for entry in r.findall('./gateways/external/list/entry[@name]'):
                     # stupid GP client doesn't know how to resolve the
                     # gateway address while connected through a proxy
-                    entry.attrib['name'] = socket.gethostbyname(entry.attrib['name'])
+                    hp = entry.attrib['name'].split(':', 1)
+                    h, p = hp[0], ((':'+hp[1]) if len(hp)==2 else '')
+                    entry.attrib['name'] = socket.gethostbyname(h)+p
                 return '<?xml version="1.0" encoding="UTF-8"?>' + ET.tostring(r)
 
     def save_handler(self, req, req_body, res, res_body):
