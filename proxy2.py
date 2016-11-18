@@ -1,3 +1,4 @@
+#!/usr/bin/python2
 # -*- coding: utf-8 -*-
 import sys
 import os
@@ -37,12 +38,8 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
             return HTTPServer.handle_error(self, request, client_address)
 
 
-class ProxyRequestHandler(BaseHTTPRequestHandler):
-    cakey = 'ca.key'
-    cacert = 'ca.crt'
-    certkey = 'cert.key'
-    certdir = 'certs/'
-    timeout = 5
+class CheckpointForwarder(BaseHTTPRequestHandler):
+    timeout = 30
     lock = threading.Lock()
 
     def __init__(self, *args, **kwargs):
@@ -58,77 +55,21 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
 
         self.log_message(format, *args)
 
-    def do_CONNECT(self):
-        if os.path.isfile(self.cakey) and os.path.isfile(self.cacert) and os.path.isfile(self.certkey) and os.path.isdir(self.certdir):
-            self.connect_intercept()
-        else:
-            print with_color(31, '''Relaying proxy traffic rather than intercepting it.
-*** THIS IS PROBABLY NOT WHAT YOU WANT!! ***
-You need to create the CA certificate files to allow this proxy to
-act as a man-in-the-middle (MITM) to intercept and decode HTTPS
-traffic. Run ./setup_https_intercept.sh and restart proxy.''')
-            self.connect_relay()
-
-    def connect_intercept(self):
-        hostname = self.path.split(':')[0]
-        certpath = "%s/%s.crt" % (self.certdir.rstrip('/'), hostname)
-
-        with self.lock:
-            if not os.path.isfile(certpath):
-                epoch = "%d" % (time.time() * 1000)
-                p1 = Popen(["openssl", "req", "-new", "-key", self.certkey, "-subj", "/CN=%s" % hostname], stdout=PIPE)
-                p2 = Popen(["openssl", "x509", "-req", "-days", "3650", "-CA", self.cacert, "-CAkey", self.cakey, "-set_serial", epoch, "-out", certpath], stdin=p1.stdout, stderr=PIPE)
-                p2.communicate()
-
-        self.wfile.write("%s %d %s\r\n" % (self.protocol_version, 200, 'Connection Established'))
-        self.end_headers()
-
-        self.connection = ssl.wrap_socket(self.connection, keyfile=self.certkey, certfile=certpath, server_side=True)
-        self.rfile = self.connection.makefile("rb", self.rbufsize)
-        self.wfile = self.connection.makefile("wb", self.wbufsize)
-
-        conntype = self.headers.get('Proxy-Connection', '')
-        if conntype.lower() == 'close':
-            self.close_connection = 1
-        elif (conntype.lower() == 'keep-alive' and self.protocol_version >= "HTTP/1.1"):
-            self.close_connection = 0
-
-    def connect_relay(self):
-        address = self.path.split(':', 1)
-        address[1] = int(address[1]) or 443
-        try:
-            s = socket.create_connection(address, timeout=self.timeout)
-        except Exception as e:
-            self.send_error(502)
-            print with_color(7, with_color(31, '== Caught exception ==\n%s' % traceback.format_exc()))
-            return
-        self.send_response(200, 'Connection Established')
-        self.end_headers()
-
-        conns = [self.connection, s]
-        self.close_connection = 0
-        while not self.close_connection:
-            rlist, wlist, xlist = select.select(conns, [], conns, self.timeout)
-            if xlist or not rlist:
-                break
-            for r in rlist:
-                other = conns[1] if r is conns[0] else conns[0]
-                data = r.recv(8192)
-                if not data:
-                    self.close_connection = 1
-                    break
-                other.sendall(data)
-
     def do_GET(self):
-        if self.path == 'http://proxy2.test/':
+        if self.path == 'https://proxy2.test/':
             self.send_cacert()
             return
+
+        self.rfile = self.connection.makefile("rb", self.rbufsize)
+        self.wfile = self.connection.makefile("wb", self.wbufsize)
 
         req = self
         content_length = int(req.headers.get('Content-Length', 0))
         req_body = self.rfile.read(content_length) if content_length else None
 
         if req.path[0] == '/':
+            if 'Host' not in req.headers:
+                req.headers['Host'] = self.default_server
             if isinstance(self.connection, ssl.SSLSocket):
                 req.path = "https://%s%s" % (req.headers['Host'], req.path)
             else:
@@ -145,15 +86,19 @@ traffic. Run ./setup_https_intercept.sh and restart proxy.''')
         u = urlparse.urlsplit(req.path)
         scheme, netloc, path = u.scheme, u.netloc, (u.path + '?' + u.query if u.query else u.path)
         assert scheme in ('http', 'https')
-        if netloc:
-            req.headers['Host'] = netloc
+#        if netloc:
+#            req.headers['Host'] = netloc
+        netloc = req.headers['Host'] = self.default_server
         setattr(req, 'headers', self.filter_headers(req.headers))
 
         try:
             origin = (scheme, netloc)
             if not origin in self.tls.conns:
                 if scheme == 'https':
-                    self.tls.conns[origin] = httplib.HTTPSConnection(netloc, timeout=self.timeout)
+                    ctx = ssl.create_default_context()
+                    ctx.check_hostname = False
+                    ctx.verify_mode = ssl.CERT_NONE
+                    self.tls.conns[origin] = httplib.HTTPSConnection(netloc, timeout=self.timeout, context=ctx)
                 else:
                     self.tls.conns[origin] = httplib.HTTPConnection(netloc, timeout=self.timeout)
             conn = self.tls.conns[origin]
@@ -344,20 +289,19 @@ traffic. Run ./setup_https_intercept.sh and restart proxy.''')
         self.print_info(req, req_body, res, res_body)
 
 
-def test(HandlerClass=ProxyRequestHandler, ServerClass=ThreadingHTTPServer, protocol="HTTP/1.1"):
-    if sys.argv[1:]:
-        port = int(sys.argv[1])
-    else:
-        port = 8080
+def test(HandlerClass=CheckpointForwarder, ServerClass=ThreadingHTTPServer, protocol="HTTP/1.1"):
+    port = int(sys.argv[1]) if sys.argv[1:] else 443
+    default_server = sys.argv[2] if sys.argv[2:] else 'localhost'
     server_address = ('', port)
 
     HandlerClass.protocol_version = protocol
+    HandlerClass.default_server = default_server
     httpd = ServerClass(server_address, HandlerClass)
+    httpd.socket = ssl.wrap_socket (httpd.socket, keyfile=None, certfile='./server.pem', server_side=True)
 
     sa = httpd.socket.getsockname()
     print "Serving HTTP Proxy on", sa[0], "port", sa[1], "..."
     httpd.serve_forever()
-
 
 if __name__ == '__main__':
     test()
